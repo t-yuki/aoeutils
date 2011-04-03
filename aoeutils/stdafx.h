@@ -7,7 +7,7 @@
 
 #include "targetver.h"
 
-#define WIN32_LEAN_AND_MEAN             // Windows ヘッダーから使用されていない部分を除外します。
+// #define WIN32_LEAN_AND_MEAN             // Windows ヘッダーから使用されていない部分を除外します。
 // Windows ヘッダー ファイル:
 #include <windows.h>
 
@@ -22,4 +22,8 @@
 #include <wininet.h>
 #pragma comment(lib, "wininet.lib")
 #include <cassert>
-#include <gdiplus.h>
+
+#include <zlib.h>
+#pragma comment(lib, "../lpng152/projects/visualc71/Win32_LIB_Release/zlib/zlib.lib")
+#include <png.h>
+#pragma comment(lib, "../lpng152/projects/visualc71/Win32_LIB_Release/libpng.lib")

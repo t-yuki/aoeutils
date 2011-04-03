@@ -157,7 +157,54 @@ void run1(HWND hWnd, LPARAM lParam)
     return;
 }
 
-void run_capture_target_window(BITMAPINFO *pbmi, void **ppbits){
+struct bmp2png_buf_desc{
+    void* hptr;
+    SIZE_T length;
+    SIZE_T capacity;
+    LONG width;
+    LONG height;
+
+    bmp2png_buf_desc(): hptr(NULL), length(0), capacity(0), width(0), height(0){
+    }
+
+    ~bmp2png_buf_desc(){
+        if(hptr != NULL){
+            HeapFree(GetProcessHeap(), 0, hptr);
+        }
+    }
+
+    void require(SIZE_T size){
+        if(size > capacity){
+            SIZE_T newcap = max(max(capacity, 1024)*2, size);
+            void* newptr = (BYTE*) HeapAlloc(GetProcessHeap(), HEAP_GENERATE_EXCEPTIONS, newcap);
+            if(hptr != NULL){
+               CopyMemory(newptr, hptr, length);
+               HeapFree(GetProcessHeap(), 0, hptr);
+            }
+            hptr = newptr;
+            capacity = newcap;
+        }
+    }
+};
+
+void run_bmp_bgra2rgb(BYTE* dst, const BYTE* src, SIZE_T src_length){
+    const BYTE* end = src + src_length;
+
+    while (src < end){
+      BYTE b = *src++; // b
+      BYTE g = *src++; // b
+      BYTE r = *src++; // b
+      *dst++ = r;
+      *dst++ = g;
+      *dst++ = b;
+      src += 1; // skip
+    }
+}
+
+void run_capture_target_window(bmp2png_buf_desc* bmpbuf){
+    void *pbits;
+    BITMAPINFO *pbmi = (BITMAPINFO*)new BYTE[sizeof(BITMAPINFO)];
+
     HWND targetWnd = FindWindow(NULL, TARGET_WINDOW_NAME);
 
     RECT rect = {0};
@@ -173,33 +220,120 @@ void run_capture_target_window(BITMAPINFO *pbmi, void **ppbits){
     pbmi->bmiHeader.biWidth = width;
     pbmi->bmiHeader.biHeight = height;
     pbmi->bmiHeader.biPlanes = 1;
-
-    //１ピクセルあたりビット数を格納
     pbmi->bmiHeader.biBitCount = GetDeviceCaps(hdcScreen, BITSPIXEL);
-
-    //ビットマップのバイト数を格納
-    //(今時の環境では、色は１ピクセル=４バイト表現なので、単純に*4とした。)
-    pbmi->bmiHeader.biSizeImage = pbmi->bmiHeader.biWidth * pbmi->bmiHeader.biHeight * 4;
+    pbmi->bmiHeader.biSizeImage = pbmi->bmiHeader.biWidth * pbmi->bmiHeader.biHeight * pbmi->bmiHeader.biBitCount/8;
 
     //DIB を作成してウインドウからビットマップをコピー
-    HBITMAP hBitmap = CreateDIBSection(hdcScreen, pbmi, DIB_RGB_COLORS, ppbits, NULL, 0);
+    HBITMAP hBitmap = CreateDIBSection(hdcScreen, pbmi, DIB_RGB_COLORS, &pbits, NULL, 0);
     HDC hdcCompat = CreateCompatibleDC(hdcScreen);
     HBITMAP hBitmapPrev = (HBITMAP)SelectObject(hdcCompat, hBitmap);
     BitBlt(hdcCompat, 0, 0, pbmi->bmiHeader.biWidth, pbmi->bmiHeader.biHeight, hdcScreen, rect.left, rect.top, SRCCOPY);
+
+    bmpbuf->require(pbmi->bmiHeader.biSizeImage*3/4);
+    run_bmp_bgra2rgb((BYTE*) bmpbuf->hptr, (BYTE*) pbits, pbmi->bmiHeader.biSizeImage);
+    bmpbuf->width = pbmi->bmiHeader.biWidth;
+    bmpbuf->height = pbmi->bmiHeader.biHeight;
+    bmpbuf->length = pbmi->bmiHeader.biSizeImage*3/4;
+
     SelectObject(hdcCompat, hBitmapPrev);
     ReleaseDC(NULL, hdcScreen);
+    delete[] (BYTE*)pbmi;
 }
 
-void run_filesave(BYTE* bmp_data, SIZE_T bmp_filesize){
+static void PNGCBAPI run_bmp2png_write_fn(png_structp png_ptr, png_bytep data, png_size_t length)
+{
+    bmp2png_buf_desc* buf = (bmp2png_buf_desc*) png_get_io_ptr(png_ptr);
+    buf->require(buf->length + length);
+    CopyMemory((BYTE*)buf->hptr + buf->length, data, length);
+    buf->length += length;
+    // png_error(png_ptr,"Write Error");
+}
+
+static void PNGCBAPI run_bmp2png_flush_fn(png_structp png_ptr){
+    ;
+}
+
+bool run_bmp2png(bmp2png_buf_desc* pngbuf, bmp2png_buf_desc* bmpbuf){
+  png_struct  *png_ptr = NULL;
+  png_info    *info_ptr = NULL;
+  png_byte    *bmp_pixels = (png_byte*) bmpbuf->hptr;
+  png_byte    **row_pointers = NULL;
+  png_uint_32 width = bmpbuf->width;
+  png_uint_32 height = bmpbuf->height;
+  png_uint_32 in_row_bytes = width * 3;
+
+  /* prepare the standard PNG structures */
+  png_ptr = png_create_write_struct (PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
+  if (!png_ptr)
+  {
+    return FALSE;
+  }
+  info_ptr = png_create_info_struct (png_ptr);
+  if (!info_ptr)
+  {
+    png_destroy_write_struct (&png_ptr, (png_infopp) NULL);
+    return FALSE;
+  }
+
+  /* setjmp() must be called in every function that calls a PNG-reading libpng function */
+  if (setjmp (png_jmpbuf(png_ptr)))
+  {
+    png_destroy_write_struct (&png_ptr, (png_infopp) NULL);
+    return FALSE;
+  }
+
+  /* initialize the png structure */
+//  FILE* fp = fopen("test2.png", "wb");
+//  png_init_io(png_ptr, fp);
+  png_set_write_fn(png_ptr, pngbuf, run_bmp2png_write_fn, run_bmp2png_flush_fn);
+
+  /* we're going to write more or less the same PNG as the input file */
+  png_set_IHDR (png_ptr, info_ptr, width, height, 8, PNG_COLOR_TYPE_RGB, PNG_INTERLACE_NONE,
+    PNG_COMPRESSION_TYPE_BASE, PNG_FILTER_TYPE_BASE);
+
+  /* write the file header information */
+  png_write_info (png_ptr, info_ptr);
+
+  /* if needed we will allocate memory for an new array of row-pointers */
+  if (row_pointers == (unsigned char**) NULL)
+  {
+    if ((row_pointers = (png_byte **) malloc (height * sizeof (png_bytep))) == NULL)
+    {
+      png_destroy_write_struct (&png_ptr, (png_infopp) NULL);
+      return FALSE;
+    }
+  }
+
+  /* set the individual row_pointers to point at the correct offsets */
+  for (unsigned int i = 0; i < (height); i++)
+    row_pointers[i] = bmp_pixels + (height-i-1) * in_row_bytes;
+
+  /* write out the entire image data in one call */
+  png_write_image (png_ptr, row_pointers);
+
+  /* write the additional chuncks to the PNG file (not really needed) */
+  png_write_end (png_ptr, info_ptr);
+
+  /* clean up after the write, and free any memory allocated */
+  png_destroy_write_struct (&png_ptr, (png_infopp) NULL);
+
+  if (row_pointers != (unsigned char**) NULL)
+    free (row_pointers);
+  // fclose(fp);
+
+  return TRUE;
+} /* end of pnm2png */
+
+void run_filesave(bmp2png_buf_desc* pngbuf){
     HANDLE hfile;
     DWORD tmp;
     //DIB をファイルへセーブ
-    hfile = CreateFile(_T("TEST1.bmp"), GENERIC_WRITE, FILE_SHARE_WRITE, NULL, CREATE_ALWAYS, 0, NULL);
-    WriteFile(hfile, bmp_data, bmp_filesize, &tmp, NULL);
+    hfile = CreateFile(_T("TEST1.png"), GENERIC_WRITE, FILE_SHARE_WRITE, NULL, CREATE_ALWAYS, 0, NULL);
+    WriteFile(hfile, pngbuf->hptr, pngbuf->length, &tmp, NULL);
     CloseHandle(hfile);
 }
 
-void run_httpsend(BYTE* bmp_data, SIZE_T bmp_filesize){
+void run_httpsend(bmp2png_buf_desc* pngbuf){
     /* WININET初期化 */
     HINTERNET hInternet = InternetOpen(_T("WININET Sample Program"),
         INTERNET_OPEN_TYPE_PRECONFIG, NULL, NULL, 0);
@@ -216,21 +350,21 @@ void run_httpsend(BYTE* bmp_data, SIZE_T bmp_filesize){
         _T("POST"), _T("/bin/db/host_parser.cgi"), NULL, NULL,
         NULL, 0, 0);
 
-    bool res;
+    BOOL res;
     TCHAR* h1 = _T("Content-Type: multipart/form-data; boundary=z--aoeutils--z");
     res = HttpAddRequestHeaders(hHttpRequest, h1, _tcslen(h1), HTTP_ADDREQ_FLAG_REPLACE | HTTP_ADDREQ_FLAG_ADD);
 
     const char* b1 = 
         "Content-Type: multipart/form-data; boundary=z--aoeutils--z\x0D\x0A"
         "--z--aoeutils--z\x0D\x0A"
-        "Content-Disposition: form-data; name=\"host1\"; filename=\"host1.bmp\"\x0D\x0A"
-        "Content-Type: image/bmp\x0D\x0A\x0D\x0A";
+        "Content-Disposition: form-data; name=\"host1\"; filename=\"host1.png\"\x0D\x0A"
+        "Content-Type: image/png\x0D\x0A\x0D\x0A";
     const char* b3 = "\x0D\x0A--z--aoeutils--z--\x0D\x0A";
-    SIZE_T req_size = strlen(b1) + bmp_filesize + strlen(b3);
+    SIZE_T req_size = strlen(b1) + pngbuf->length + strlen(b3);
     BYTE* req_data = (BYTE*) HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY | HEAP_GENERATE_EXCEPTIONS, req_size);
     CopyMemory(req_data, b1, strlen(b1));
-    CopyMemory(req_data + strlen(b1), bmp_data, bmp_filesize);
-    CopyMemory(req_data + strlen(b1) + bmp_filesize, b3, strlen(b3));
+    CopyMemory(req_data + strlen(b1), pngbuf->hptr, pngbuf->length);
+    CopyMemory(req_data + strlen(b1) + pngbuf->length, b3, strlen(b3));
 
     res = HttpSendRequest(hHttpRequest, NULL, 0, req_data, req_size);
     assert(res);
@@ -262,56 +396,21 @@ void run_httpsend(BYTE* bmp_data, SIZE_T bmp_filesize){
     InternetCloseHandle(hInternet);
 }
 
-void run_bmp2png(){
-    GdiplusStartupInput gdiplusStartupInput;
-    ULONG_PTR gdiplusToken;
-    GdiplusStartup(&gdiplusToken, &gdiplusStartupInput, NULL);
-
-    CLSID   encoderClsid;
-    Status  stat;
-    Image*   image = new Image(L"Bird.bmp");
-
-    // Get the CLSID of the PNG encoder.
-    GetEncoderClsid(L"image/png", &encoderClsid);
-
-    stat = image->Save(L"Bird.png", &encoderClsid, NULL);
-
-    if(stat == Ok)
-        printf("Bird.png was saved successfully\n");
-    else
-        printf("Failure: stat = %d\n", stat); 
-
-    delete image;
-    GdiplusShutdown(gdiplusToken);
-
-}
-
 void run2(HWND hWnd, LPARAM lParam)
 {
-    void *pbits;
-    BITMAPINFO *pbmi = (BITMAPINFO*)new BYTE[sizeof(BITMAPINFO)];
+    bmp2png_buf_desc bmpbuf;
+    bmpbuf.require(1024*768*3);
+
     // キャプチャ
-    run_capture_target_window(pbmi, &pbits);
+    run_capture_target_window(&bmpbuf);
 
-    //ビットマップファイルをメモリ上に作成
+    // pngへ
+    bmp2png_buf_desc pngbuf;
+    pngbuf.require(1024*768*3);
+    run_bmp2png(&pngbuf, &bmpbuf);
 
-    //ヘッダーを作成
-    BITMAPFILEHEADER bmfh;
-    bmfh.bfType = 0x4D42;   //BitMapファイルを表すコード
-    //("BM"をWORD型に格納したもので、決まりごとです。)
-    bmfh.bfOffBits = sizeof(BITMAPFILEHEADER)+sizeof(BITMAPINFOHEADER);
-    bmfh.bfSize = bmfh.bfOffBits+pbmi->bmiHeader.biSizeImage;
-
-    SIZE_T bmp_filesize = bmfh.bfOffBits + pbmi->bmiHeader.biSizeImage;
-    BYTE* bmp_data = (BYTE*) HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY | HEAP_GENERATE_EXCEPTIONS, bmp_filesize);
-    CopyMemory(bmp_data, &bmfh, sizeof(bmfh));
-    CopyMemory(bmp_data + sizeof(bmfh), &pbmi->bmiHeader, sizeof(pbmi->bmiHeader));
-    CopyMemory(bmp_data + bmfh.bfOffBits, pbits, pbmi->bmiHeader.biSizeImage);
-
-    run_filesave(bmp_data, bmp_filesize);
-    run_httpsend(bmp_data, bmp_filesize);
-
-    //BITMAPINFOの解放
-    delete[] (BYTE*)pbmi;    
-    HeapFree(GetProcessHeap(), 0, bmp_data);
+    // 保存
+    run_filesave(&pngbuf);
+    // 送信
+    run_httpsend(&pngbuf);
 }
