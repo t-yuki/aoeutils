@@ -127,7 +127,6 @@ INT_PTR CALLBACK DlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
             case IDM_ABOUT:
                 DialogBox(hInst, MAKEINTRESOURCE(IDD_ABOUTBOX), hDlg, About);
                 return (INT_PTR)TRUE;
-            case IDM_RUN1:
             case IDC_BUTTON1:
                 run1(hDlg, lParam);
                 return (INT_PTR)TRUE;
@@ -334,6 +333,24 @@ void run_filesave(bmp2png_buf_desc* pngbuf){
 }
 
 void run_httpsend(bmp2png_buf_desc* pngbuf){
+    std::string queryStr("/bin/db/host_parser.cgi");
+    for(int i = 0; i < 8; i++){
+        queryStr.append(i == 0 ? "?p" : "&p");
+        queryStr.push_back('1' + i);
+        queryStr.append(".rank=");
+        
+        TCHAR rankText[2];
+        char cRankText[6];
+        GetDlgItemText(hDlg, IDC_EDIT2+i, rankText, sizeof(rankText));
+        WideCharToMultiByte(CP_THREAD_ACP, 0, rankText, 2, cRankText, 6, NULL, NULL);
+        queryStr.append(cRankText);
+    }
+    
+    int queryTextLen = MultiByteToWideChar(CP_THREAD_ACP, 0, (char*) queryStr.c_str(), queryStr.length(), NULL, 0) + 1;
+    TCHAR* queryText = new TCHAR[queryTextLen];
+    ZeroMemory(queryText, sizeof(TCHAR)*queryTextLen);
+    MultiByteToWideChar(CP_THREAD_ACP, 0, (char*)queryStr.c_str(), queryStr.length(), queryText, queryTextLen);
+
     /* WININET初期化 */
     HINTERNET hInternet = InternetOpen(_T("WININET Sample Program"),
         INTERNET_OPEN_TYPE_PRECONFIG, NULL, NULL, 0);
@@ -347,8 +364,9 @@ void run_httpsend(bmp2png_buf_desc* pngbuf){
 
     /* HTTP要求の作成 */
     HINTERNET hHttpRequest = HttpOpenRequest(hHttpSession,
-        _T("POST"), _T("/bin/db/host_parser.cgi"), NULL, NULL,
+        _T("POST"), queryText, NULL, NULL,
         NULL, 0, 0);
+    delete[] queryText;
 
     BOOL res;
     TCHAR* h1 = _T("Content-Type: multipart/form-data; boundary=z--aoeutils--z");
@@ -373,21 +391,22 @@ void run_httpsend(bmp2png_buf_desc* pngbuf){
     DWORD resBufSize = 8192;
     BYTE* resBuf = (BYTE*) HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY | HEAP_GENERATE_EXCEPTIONS, resBufSize);
 
+    std::string resString;
     /* コンテンツの内容を取得・表示 */
     while(1){
         DWORD readSize;
         res = InternetReadFile(hHttpRequest, resBuf, resBufSize, &readSize);
         if(res == 1 && readSize == 0) break;
         assert(res);
-
-        int resTextLen = MultiByteToWideChar(CP_THREAD_ACP, 0, (char*)resBuf, readSize, NULL, 0) + 1;
-        TCHAR* resText = new TCHAR[resTextLen];
-        ZeroMemory(resText, sizeof(TCHAR)*resTextLen);
-        MultiByteToWideChar(CP_THREAD_ACP, 0, (char*)resBuf, readSize, resText, resTextLen);
-        HWND editCtl = GetDlgItem(hDlg, IDC_EDIT1);
-        SetDlgItemText(hDlg, IDC_EDIT1, resText);
-        delete[] resText;
+        resString.append((char*) resBuf, readSize);
     }
+    int resTextLen = MultiByteToWideChar(CP_THREAD_ACP, 0, (char*)resString.c_str(), resString.length(), NULL, 0) + 1;
+    TCHAR* resText = new TCHAR[resTextLen];
+    ZeroMemory(resText, sizeof(TCHAR)*resTextLen);
+    MultiByteToWideChar(CP_THREAD_ACP, 0, (char*)resString.c_str(), resString.length(), resText, resTextLen);
+    HWND editCtl = GetDlgItem(hDlg, IDC_EDIT1);
+    SetDlgItemText(hDlg, IDC_EDIT1, resText);
+    delete[] resText;
 
     /* 後処理 */
     HeapFree(GetProcessHeap(), 0, resBuf);

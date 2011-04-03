@@ -27,3 +27,4 @@
 #pragma comment(lib, "../lpng152/projects/visualc71/Win32_LIB_Release/zlib/zlib.lib")
 #include <png.h>
 #pragma comment(lib, "../lpng152/projects/visualc71/Win32_LIB_Release/libpng.lib")
+#include <string>
