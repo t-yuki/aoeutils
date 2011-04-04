@@ -128,7 +128,10 @@ INT_PTR CALLBACK DlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
                 DialogBox(hInst, MAKEINTRESOURCE(IDD_ABOUTBOX), hDlg, About);
                 return (INT_PTR)TRUE;
             case IDC_BUTTON1:
-                run1(hDlg, lParam);
+                run_capturetg(hDlg, lParam);
+                return (INT_PTR)TRUE;
+            case IDC_BUTTON2:
+                run_filetg(hDlg, lParam);
                 return (INT_PTR)TRUE;
             }
         }
@@ -137,14 +140,14 @@ INT_PTR CALLBACK DlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
         PostQuitMessage(WM_QUIT);
         break;
     case WM_APP_RUN1:
-        run2(hDlg, lParam);
+        run_capturetg(hDlg, lParam);
         break;
     }
 
     return (INT_PTR)FALSE;
 }
 
-void run1(HWND hWnd, LPARAM lParam)
+void run_foreground(HWND hWnd, LPARAM lParam)
 {
     HWND targetWnd = FindWindow(NULL, TARGET_WINDOW_NAME);
 
@@ -415,13 +418,116 @@ void run_httpsend(bmp2png_buf_desc* pngbuf){
     InternetCloseHandle(hInternet);
 }
 
-void run2(HWND hWnd, LPARAM lParam)
+void run_capturetg(HWND hWnd, LPARAM lParam)
 {
     bmp2png_buf_desc bmpbuf;
     bmpbuf.require(1024*768*3);
 
     // キャプチャ
     run_capture_target_window(&bmpbuf);
+
+    // pngへ
+    bmp2png_buf_desc pngbuf;
+    pngbuf.require(1024*768*3);
+    run_bmp2png(&pngbuf, &bmpbuf);
+
+    // 保存
+    run_filesave(&pngbuf);
+    // 送信
+    run_httpsend(&pngbuf);
+}
+
+void run_get_latestbmp(TCHAR* fileName){
+    HKEY hkey;
+    LONG regRes = RegOpenKeyEx(
+      HKEY_LOCAL_MACHINE, _T("SOFTWARE\\Microsoft\\Microsoft Games\\Age of Empires Expansion\\1.0"),
+      0, KEY_READ, &hkey);
+
+    DWORD regType;
+    TCHAR regData[MAX_PATH];
+    DWORD regDataSize = MAX_PATH*sizeof(TCHAR);
+    regRes =  RegQueryValueEx(hkey, _T("EXE Path"), NULL, &regType, (BYTE*) regData, &regDataSize);
+    _tcscpy_s(fileName, MAX_PATH, regData);
+    _tcscat_s(regData, MAX_PATH, _T("\\AoE*.bmp"));
+    regRes = RegCloseKey(hkey);
+
+    WIN32_FIND_DATA fd;
+    HANDLE hFind = FindFirstFile(regData, &fd);
+
+    if(hFind == INVALID_HANDLE_VALUE) {
+        printf ("Invalid File Handle. Get Last Error reports %d\n", GetLastError ());
+        assert(false);
+        return;
+    } 
+    while(1){
+        if(!FindNextFile(hFind, &fd)){
+		    if( GetLastError() == ERROR_NO_MORE_FILES ){
+    			break;
+		    }else{
+			    break;
+		    }
+        }
+	}
+    _tcscat_s(fileName, MAX_PATH, _T("\\"));
+    _tcscat_s(fileName, MAX_PATH, fd.cFileName);
+    FindClose(hFind);
+}
+
+int run_read_bmp(bmp2png_buf_desc* bmpbuf, const TCHAR *file)
+{
+    HANDLE fh = CreateFile(file, GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if(fh == INVALID_HANDLE_VALUE){
+        assert(false);
+        return -1;
+    }
+    DWORD fileSize = GetFileSize(fh, NULL);
+    BYTE* filebuf = (BYTE*) HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, fileSize);
+    DWORD readSize;
+    ReadFile(fh, filebuf, fileSize, &readSize, NULL);
+    CloseHandle(fh);
+
+    BITMAPFILEHEADER *bmpfh = (BITMAPFILEHEADER*) filebuf;
+    BITMAPINFO *bmpi = (BITMAPINFO*)(filebuf + sizeof(BITMAPFILEHEADER));
+    int bitCount = bmpi->bmiHeader.biBitCount;
+    if(bitCount != 8){
+        assert(false);
+        HeapFree(GetProcessHeap(), 0, filebuf);
+        return -2;
+    }
+
+    BYTE* pbits = filebuf + bmpfh->bfOffBits;
+    int width = bmpi->bmiHeader.biWidth;
+    int height = bmpi->bmiHeader.biHeight;
+    int rowbytes = width*(bitCount/8);
+    bmpbuf->width = width;
+    bmpbuf->height = height;
+    bmpbuf->require(width*height*3);
+
+    for(int y = 0; y < height; y++){
+        for(int x = 0; x < width; x++){
+            BYTE *pixels = (BYTE*) bmpbuf->hptr;
+            RGBQUAD *colors = bmpi->bmiColors;
+            int pos = y*rowbytes + x;
+            pixels[3*pos+0] = colors[pbits[pos]].rgbRed;
+            pixels[3*pos+1] = colors[pbits[pos]].rgbGreen;
+            pixels[3*pos+2] = colors[pbits[pos]].rgbBlue;
+        }
+    }
+    bmpbuf->length = width*height*3;
+
+    HeapFree(GetProcessHeap(), 0, filebuf);
+    return 0;
+}
+
+void run_filetg(HWND hWnd, LPARAM lParam)
+{
+    bmp2png_buf_desc bmpbuf;
+    bmpbuf.require(1024*768*3);
+
+    // キャプチャ
+    TCHAR bmpfile[MAX_PATH];
+    run_get_latestbmp(bmpfile);
+    run_read_bmp(&bmpbuf, bmpfile);
 
     // pngへ
     bmp2png_buf_desc pngbuf;

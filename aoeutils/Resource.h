@@ -11,6 +11,7 @@
 #define IDD_DIALOG1                             110
 #define IDC_EDIT1                               1000
 #define IDC_BUTTON1                             1001
+#define IDC_BUTTON2                             1002
 #define IDC_EDIT2                               1007
 #define IDC_EDIT3                               1008
 #define IDC_EDIT4                               1009
